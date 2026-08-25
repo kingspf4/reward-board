@@ -55,11 +55,17 @@ const DEFAULT_REWARDS = [
 function initDB() {
   const studentsRef = ref(db, 'students');
   onValue(studentsRef, snap => {
-    students = snap.val() || {};
+    const incoming = snap.val() || {};
+    // 只在非自己觸發（資料真正有外部變動）時才全板重繪，避免 quickAdd 閃動
+    const prevJson = JSON.stringify(students);
+    const nextJson = JSON.stringify(incoming);
+    students = incoming;
     dbReady  = true;
-    renderBoard();
+    if (prevJson !== nextJson) renderBoard();
     const st = document.getElementById('firebase-status');
-    if (st) { st.textContent = '🟢 雲端已連線'; st.style.color = '#86efac'; }
+    if (st && st.textContent !== '🟢 雲端已連線') {
+      st.textContent = '🟢 雲端已連線'; st.style.color = '#86efac';
+    }
   }, err => {
     showToast("雲端連線失敗：" + err.message, "error");
     const st = document.getElementById('firebase-status');
@@ -148,13 +154,12 @@ function renderBoard() {
         <div class="score-label">分</div>
       </div>
       ${stars ? `<div class="stars">${stars}</div>` : ''}
-      ${isTeacher ? `
-        <div class="teacher-actions">
+      <div class="teacher-actions">
           <button class="btn-plus"  onclick="quickAdd('${id}', 1)"  title="加 1 分">＋1</button>
           <button class="btn-plus big-add" onclick="quickAdd('${id}', 5)" title="加 5 分">＋5</button>
           <button class="btn-minus" onclick="quickAdd('${id}', -1)" title="扣 1 分">－1</button>
-          <button class="btn-edit"  onclick="openEdit('${id}')"     title="詳細設定">✏️</button>
-        </div>` : ''}`;
+          ${isTeacher ? `<button class="btn-edit" onclick="openEdit('${id}')" title="詳細設定">✏️</button>` : ''}
+        </div>`;
     container.appendChild(card);
   });
 
@@ -167,14 +172,18 @@ function renderBoard() {
 //  快速加減分
 // ═══════════════════════════════════════
 async function quickAdd(id, delta) {
-  if (!isTeacher) return;
-  const s     = students[id];
+  const s      = students[id];
   const raw_sc = Math.max(0, (s.score || 0) + delta);
-  const newSc = (maxScore > 0 && raw_sc > maxScore) ? maxScore : raw_sc;
+  const newSc  = (maxScore > 0 && raw_sc > maxScore) ? maxScore : raw_sc;
+
+  // 先更新本地狀態與 DOM，避免等 Firebase 回應才重繪造成閃動
+  students[id] = { ...s, score: newSc };
+  const scoreEl = document.querySelector('#cc-' + id + ' .score');
+  if (scoreEl) scoreEl.textContent = newSc;
+
   await saveStudent(id, { ...s, score: newSc });
   await logHistory({ studentId: id, name: s.name, delta, reason: delta > 0 ? '快速加分' : '快速扣分' });
-  showToast(`${s.name} ${delta > 0 ? '＋' : ''}${delta} 分 → ${newSc} 分`);
-
+  showToast(s.name + ' ' + (delta > 0 ? '＋' : '') + delta + ' 分 → ' + newSc + ' 分');
 }
 window.quickAdd = quickAdd;
 
