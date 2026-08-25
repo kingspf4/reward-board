@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>班級榮譽看板</title>
+
+<!-- ════════════════════════════════════════════
+     ★ 第一步：把 Firebase 設定貼在這裡
+     從 Firebase 主控台 > 專案設定 > 你的應用程式
+     複製 firebaseConfig 物件，取代下方的 TODO 區段
+     ════════════════════════════════════════════ -->
+<script type="module">
+import { initializeApp }           from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, set, get, onValue, push, serverTimestamp }
+                                    from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey:            "AIzaSyAgX9-ucO7zVUbQ33yuEreSJU6rKtSFfgw",
+  authDomain:        "reward-16e2c.firebaseapp.com",
+  databaseURL:       "https://reward-16e2c-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "reward-16e2c",
+  storageBucket:     "reward-16e2c.firebasestorage.app",
+  messagingSenderId: "377335225949",
+  appId:             "1:377335225949:web:f0d3639d19a979f108b7b4"
+};
+
+const TEACHER_PASSWORD = "1234"; // ← 可改成你自己的密碼
+
+const app = initializeApp(firebaseConfig);
+const db  = getDatabase(app);
+
+// ═══════════════════════════════════════
+//  狀態
+// ═══════════════════════════════════════
+let students    = {};   // { id: {name, score} }
+let rewards     = [];   // [{ id, name, cost, emoji, stock }]
+let isTeacher   = false;
+let editingId   = null;
+let dbReady     = false;
+let sortByRank  = false;  // false = 座號排序，true = 名次排序
+let maxScore    = 0;       // 0 = 不限制
+
+const DEFAULT_REWARDS = [
+  { id:'r1', name:'不寫一題作業', cost:20, emoji:'📝', stock:-1 },
+  { id:'r2', name:'貼紙一張',      cost:10, emoji:'⭐', stock:-1 },
+  { id:'r3', name:'糖果一顆',      cost:15, emoji:'🍬', stock:-1 },
+  { id:'r4', name:'自由座位一節', cost:30, emoji:'🪑', stock:-1 },
+  { id:'r5', name:'老師小禮物',   cost:50, emoji:'🎁', stock:5  },
+];
+
+// ═══════════════════════════════════════
+//  Firebase 讀取
+// ═══════════════════════════════════════
+function initDB() {
+  const studentsRef = ref(db, 'students');
+  onValue(studentsRef, snap => {
+    students = snap.val() || {};
+    dbReady  = true;
+    renderBoard();
+    const st = document.getElementById('firebase-status');
+    if (st) { st.textContent = '🟢 雲端已連線'; st.style.color = '#86efac'; }
+  }, err => {
+    showToast("雲端連線失敗：" + err.message, "error");
+    const st = document.getElementById('firebase-status');
+    if (st) { st.textContent = '🔴 連線失敗'; st.style.color = '#fca5a5'; }
+  });
+
+  // 讀取獎品（若雲端沒有資料，用預設清單初始化）
+  const rewardsRef = ref(db, 'rewards');
+  onValue(rewardsRef, snap => {
+    const data = snap.val();
+    if (data) {
+      rewards = Object.values(data);
+    } else {
+      rewards = DEFAULT_REWARDS;
+      DEFAULT_REWARDS.forEach(r => set(ref(db, `rewards/${r.id}`), r));
+    }
+    if(window.renderShopAndManage) renderShopAndManage(); else renderShop();
+  });
+}
+
+async function saveStudent(id, data) {
+  await set(ref(db, `students/${id}`), data);
+}
+
+async function logHistory(record) {
+  await push(ref(db, 'history'), {
+    ...record,
+    ts: serverTimestamp()
+  });
+}
+
+// ═══════════════════════════════════════
+//  渲染
+// ═══════════════════════════════════════
+function renderBoard() {
+  // 排序：名次模式（高分在前）或座號模式
+  const sorted = Object.entries(students).sort(([idA, a], [idB, b]) => {
+    if (sortByRank) return b.score - a.score;
+    const snA = a.seatNo != null ? Number(a.seatNo) : 9999;
+    const snB = b.seatNo != null ? Number(b.seatNo) : 9999;
+    if (snA !== snB) return snA - snB;
+    return idA.localeCompare(idB);
+  });
+
+  // 切換按鈕文字
+  const sortBtn = document.getElementById('btn-sort-toggle');
+  if (sortBtn) sortBtn.textContent = sortByRank ? '📋 切換座號順序' : '🏆 切換名次排列';
+
+  const container = document.getElementById('board');
+  const search    = document.getElementById('search-input').value.toLowerCase();
+
+  // 固定 6 欄（上排 1-6，下排接續）
+  container.style.gridTemplateColumns = 'repeat(6, 1fr)';
+  container.innerHTML = '';
+
+  if (!sorted.length) {
+    container.style.gridTemplateColumns = '1fr';
+    container.innerHTML = `<div style="text-align:center;color:#94a3b8;padding:3rem;font-size:16px;">
+      還沒有學生資料，請老師登入後新增！</div>`;
+    return;
+  }
+
+  // 計算名次（用分數決定，只用於顯示）
+  const byScore = [...sorted].sort(([,a],[,b]) => b.score - a.score);
+  const rankMap = {};
+  byScore.forEach(([id], idx) => rankMap[id] = idx + 1);
+
+  sorted.forEach(([id, s], idx) => {
+    if (search && !s.name.toLowerCase().includes(search)) return;
+    const seatNo = s.seatNo != null ? s.seatNo : idx + 1;
+    const rank   = rankMap[id];
+    const medal  = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
+    const card   = document.createElement('div');
+    card.className = 'student-card';
+    card.id = `cc-${id}`;
+    card.style.animationDelay = `${idx * 0.04}s`;
+
+    const stars = '⭐'.repeat(Math.min(Math.floor(s.score / 10), 5));
+
+    card.innerHTML = `
+      <div class="seat-no">No.${seatNo}</div>
+      ${medal ? `<div class="rank">${medal}</div>` : ''}
+      <div class="name">${s.name}</div>
+      <div class="score-wrap">
+        <div class="score">${s.score}</div>
+        <div class="score-label">分</div>
+      </div>
+      ${stars ? `<div class="stars">${stars}</div>` : ''}
+      ${isTeacher ? `
+        <div class="teacher-actions">
+          <button class="btn-plus"  onclick="quickAdd('${id}', 1)"  title="加 1 分">＋1</button>
+          <button class="btn-plus big-add" onclick="quickAdd('${id}', 5)" title="加 5 分">＋5</button>
+          <button class="btn-minus" onclick="quickAdd('${id}', -1)" title="扣 1 分">－1</button>
+          <button class="btn-edit"  onclick="openEdit('${id}')"     title="詳細設定">✏️</button>
+        </div>` : ''}`;
+    container.appendChild(card);
+  });
+
+  const topByScore = sorted.sort(([,a],[,b]) => b.score - a.score)[0];
+  document.getElementById('total-count').textContent = Object.keys(students).length;
+  document.getElementById('top-name').textContent    = topByScore?.[1]?.name || '—';
+}
+
+// ═══════════════════════════════════════
+//  快速加減分
+// ═══════════════════════════════════════
+async function quickAdd(id, delta) {
+  if (!isTeacher) return;
+  const s     = students[id];
+  const raw_sc = Math.max(0, (s.score || 0) + delta);
+  const newSc = (maxScore > 0 && raw_sc > maxScore) ? maxScore : raw_sc;
+  await saveStudent(id, { ...s, score: newSc });
+  await logHistory({ studentId: id, name: s.name, delta, reason: delta > 0 ? '快速加分' : '快速扣分' });
+  showToast(`${s.name} ${delta > 0 ? '＋' : ''}${delta} 分 → ${newSc} 分`);
+  // 數字跳動動畫
+  const scoreEl = document.querySelector(`#cc-${id} .score`);
+  if (scoreEl) {
+    scoreEl.classList.remove('score-bounce');
+    void scoreEl.offsetWidth;
+    scoreEl.classList.add('score-bounce');
+    scoreEl.style.color = delta > 0 ? '#059669' : '#dc2626';
+    setTimeout(() => scoreEl.style.color = '#6366f1', 800);
+  }
+}
+window.quickAdd = quickAdd;
+
+// ═══════════════════════════════════════
+//  詳細編輯 Modal
+// ═══════════════════════════════════════
+function openEdit(id) {
+  editingId = id;
+  const s   = students[id];
+  document.getElementById('edit-name').value  = s.name;
+  document.getElementById('edit-score').value = s.score;
+  const seatEl2 = document.getElementById('edit-seat');
+  if (seatEl2) seatEl2.value = s.seatNo != null ? s.seatNo : '';
+  document.getElementById('edit-delta').value = '';
+  document.getElementById('edit-reason').value= '';
+  document.getElementById('edit-modal').classList.add('show');
+}
+window.openEdit = openEdit;
+
+function closeEdit() {
+  document.getElementById('edit-modal').classList.remove('show');
+  editingId = null;
+}
+window.closeEdit = closeEdit;
+
+async function deleteStudent(id) {
+  const s = students[id];
+  if (!s) return;
+  if (!confirm(`確定要刪除「${s.name}」嗎？此操作無法復原。`)) return;
+  await set(ref(db, `students/${id}`), null);
+  closeEdit();
+  showToast(`已刪除：${s.name}`);
+}
+window.deleteStudent = deleteStudent;
+
+async function deleteAllStudents() {
+  const count = Object.keys(students).length;
+  if (!count) { showToast('目前沒有學生資料', 'error'); return; }
+  if (!confirm(`⚠️ 確定要刪除全部 ${count} 位學生嗎？
+此操作無法復原！`)) return;
+  await set(ref(db, 'students'), null);
+  showToast(`已刪除全部 ${count} 位學生`);
+}
+window.deleteAllStudents = deleteAllStudents;
+
+async function resetAllScores() {
+  const count = Object.keys(students).length;
+  if (!count) { showToast('目前沒有學生資料', 'error'); return; }
+  if (!confirm(`⚠️ 確定要將全部 ${count} 位學生的積分歸零嗎？`) ) return;
+  const updates = {};
+  Object.entries(students).forEach(([id, s]) => { updates[id] = { ...s, score: 0 }; });
+  await set(ref(db, 'students'), updates);
+  await logHistory({ studentId: 'ALL', name: '全班', delta: 0, reason: '全班積分歸零' });
+  showToast('✅ 全班積分已歸零！');
+}
+window.resetAllScores = resetAllScores;
+
+async function saveEdit() {
+  if (!editingId) return;
+  const s      = students[editingId];
+  const name   = document.getElementById('edit-name').value.trim();
+  const score  = parseInt(document.getElementById('edit-score').value) || 0;
+  const seatEl3 = document.getElementById('edit-seat');
+  const seatNo  = seatEl3 && seatEl3.value !== '' ? parseInt(seatEl3.value) : null;
+  const delta  = parseInt(document.getElementById('edit-delta').value) || 0;
+  const reason = document.getElementById('edit-reason').value.trim() || '老師手動調整';
+  const finalSc = Math.max(0, delta ? (score + delta) : score);
+
+  await saveStudent(editingId, { name, score: finalSc, seatNo });
+  if (delta) await logHistory({ studentId: editingId, name, delta, reason });
+  showToast(`已儲存：${name} = ${finalSc} 分`);
+  closeEdit();
+}
+window.saveEdit = saveEdit;
+
+// ═══════════════════════════════════════
+//  新增學生
+// ═══════════════════════════════════════
+async function addStudent() {
+  const nameEl = document.getElementById('new-name');
+  const seatEl = document.getElementById('new-seat');
+  const name   = nameEl.value.trim();
+  if (!name) { showToast('請輸入學生姓名', 'error'); return; }
+  const seatNo = seatEl && seatEl.value ? parseInt(seatEl.value) : null;
+  const id     = 'stu_' + Date.now();
+  await saveStudent(id, { name, score: 0, seatNo });
+  nameEl.value = '';
+  if (seatEl) seatEl.value = '';
+  showToast(`已新增：${seatNo ? `(${seatNo}) ` : ''}${name}`);
+}
+window.addStudent = addStudent;
+
+// ═══════════════════════════════════════
+//  批次新增（換行分隔）
+// ═══════════════════════════════════════
+async function batchAdd() {
+  const rawText = document.getElementById('batch-names').value.trim();
+  if (!rawText) return;
+  const lines = rawText.split('\n').map(n => n.trim()).filter(Boolean);
+  for (const line of lines) {
+    // 支援「1 小明」或「1\t小明」格式（座號 + 姓名），或純姓名
+    const parts = line.split(/[\s\t]+/);
+    let seatNo = null, name = line;
+    if (parts.length >= 2 && /^\d+$/.test(parts[0])) {
+      seatNo = parseInt(parts[0]);
+      name   = parts.slice(1).join(' ');
+    }
+    const id = 'stu_' + Date.now() + Math.random().toString(36).slice(2,6);
+    await saveStudent(id, { name, score: 0, seatNo });
+  }
+  document.getElementById('batch-names').value = '';
+  showToast(`已新增 ${lines.length} 位學生！`);
+  document.getElementById('batch-modal').classList.remove('show');
+}
+window.batchAdd = batchAdd;
+
+// ═══════════════════════════════════════
+//  獎勵商店
+// ═══════════════════════════════════════
+function renderShop() {
+  const grid = document.getElementById('shop-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  rewards.forEach(r => {
+    const card = document.createElement('div');
+    card.className = 'reward-card';
+    const outOfStock = r.stock === 0;
+    card.innerHTML = `
+      <div class="reward-emoji">${r.emoji}</div>
+      <div class="reward-name">${r.name}</div>
+      <div class="reward-cost">🌟 ${r.cost} 分</div>
+      ${r.stock >= 0 ? `<div class="reward-stock">剩餘：${r.stock}</div>` : ''}
+      ${outOfStock ? '<div class="reward-sold">已兌完</div>' : ''}
+    `;
+    if (isTeacher && !outOfStock) {
+      card.innerHTML += `<button class="mbtn mbtn-ok" style="margin-top:8px;width:100%;font-size:13px"
+        onclick="openRedeem('${r.id}')">為學生兌換</button>`;
+    }
+    grid.appendChild(card);
+  });
+
+  // 老師才看到「管理獎品」按鈕
+  const manageBtn = document.getElementById('btn-manage-rewards');
+  if (manageBtn) manageBtn.style.display = isTeacher ? 'inline-block' : 'none';
+}
+
+function openRedeem(rewardId) {
+  const r = rewards.find(x => x.id === rewardId);
+  if (!r) return;
+  document.getElementById('redeem-reward-name').textContent = `${r.emoji} ${r.name}（${r.cost} 分）`;
+  document.getElementById('redeem-reward-id').value = rewardId;
+  document.getElementById('redeem-student-select').innerHTML =
+    '<option value="">— 選擇學生 —</option>' +
+    Object.entries(students)
+      .sort(([,a],[,b]) => b.score - a.score)
+      .map(([id, s]) => `<option value="${id}">${s.name}（${s.score} 分）</option>`)
+      .join('');
+  document.getElementById('redeem-modal').classList.add('show');
+}
+window.openRedeem = openRedeem;
+
+async function confirmRedeem() {
+  const rewardId = document.getElementById('redeem-reward-id').value;
+  const stuId    = document.getElementById('redeem-student-select').value;
+  if (!stuId) { showToast('請選擇學生', 'error'); return; }
+
+  const r = rewards.find(x => x.id === rewardId);
+  const s = students[stuId];
+  if (!r || !s) return;
+
+  if (s.score < r.cost) {
+    showToast(`${s.name} 積分不足！需要 ${r.cost} 分，目前只有 ${s.score} 分`, 'error');
+    return;
+  }
+
+  const newSc = s.score - r.cost;
+  await saveStudent(stuId, { ...s, score: newSc });
+  await logHistory({ studentId: stuId, name: s.name, delta: -r.cost, reason: `兌換：${r.name}` });
+
+  // 若有限定庫存，扣一個
+  if (r.stock > 0) {
+    const newStock = r.stock - 1;
+    await set(ref(db, `rewards/${rewardId}/stock`), newStock);
+  }
+
+  showToast(`✅ ${s.name} 成功兌換「${r.name}」！扣 ${r.cost} 分，剩餘 ${newSc} 分`);
+  document.getElementById('redeem-modal').classList.remove('show');
+}
+window.confirmRedeem = confirmRedeem;
+
+// 新增獎品
+async function addReward() {
+  const name  = document.getElementById('new-reward-name').value.trim();
+  const cost  = parseInt(document.getElementById('new-reward-cost').value) || 10;
+  const emoji = document.getElementById('new-reward-emoji').value.trim() || '🎁';
+  const stock = parseInt(document.getElementById('new-reward-stock').value);
+  if (!name) { showToast('請輸入獎品名稱', 'error'); return; }
+  const id = 'r_' + Date.now();
+  const reward = { id, name, cost, emoji, stock: isNaN(stock) ? -1 : stock };
+  await set(ref(db, `rewards/${id}`), reward);
+  document.getElementById('new-reward-name').value  = '';
+  document.getElementById('new-reward-cost').value  = '';
+  document.getElementById('new-reward-emoji').value = '';
+  document.getElementById('new-reward-stock').value = '';
+  showToast(`已新增獎品：${name}`);
+}
+window.addReward = addReward;
+
+// 刪除獎品
+async function deleteReward(id) {
+  if (!confirm('確定刪除這個獎品？')) return;
+  await set(ref(db, `rewards/${id}`), null);
+  showToast('已刪除獎品');
+}
+window.deleteReward = deleteReward;
+
+// ═══════════════════════════════════════
+//  老師登入 / 登出
+// ═══════════════════════════════════════
+// ═══════════════════════════════════════
+//  加分歷程
+// ═══════════════════════════════════════
+async function openHistory() {
+  const histSnap = await get(ref(db, 'history'));
+  const histData = histSnap.val() || {};
+  const records  = Object.values(histData)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 50);
+
+  const list = document.getElementById('history-list');
+  if (!list) return;
+  list.innerHTML = records.length ? records.map(r => {
+    const d     = r.ts ? new Date(r.ts) : null;
+    const time  = d ? `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '—';
+    const color = r.delta > 0 ? '#065f46' : '#991b1b';
+    const bg    = r.delta > 0 ? '#d1fae5' : '#fee2e2';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid #f1f5f9;font-size:14px">
+      <span style="color:#94a3b8;min-width:72px;font-size:12px">${time}</span>
+      <span style="flex:1;font-weight:bold;color:#1e293b">${r.name}</span>
+      <span style="background:${bg};color:${color};font-weight:900;border-radius:6px;padding:2px 8px">${r.delta > 0 ? '+' : ''}${r.delta}</span>
+      <span style="color:#64748b;font-size:12px;max-width:100px;text-align:right">${r.reason || ''}</span>
+    </div>`;
+  }).join('') : '<div style="color:#94a3b8;text-align:center;padding:2rem">尚無記錄</div>';
+
+  document.getElementById('history-modal').classList.add('show');
+}
+window.openHistory = openHistory;
+
+function teacherLogin() {
+  const pw = prompt('請輸入老師密碼：');
+  if (pw === TEACHER_PASSWORD) {
+    isTeacher = true;
+    document.getElementById('teacher-bar').style.display = 'flex';
+    document.getElementById('btn-login').style.display   = 'none';
+    document.getElementById('btn-logout').style.display  = 'inline-block';
+    showToast('老師模式已開啟 ✅');
+    renderBoard();
+    renderShop();
+  } else if (pw !== null) {
+    showToast('密碼錯誤！', 'error');
+  }
+}
+function exportCSV() {
+  const sorted = Object.entries(students).sort(([,a],[,b]) => {
+    const snA = a.seatNo != null ? Number(a.seatNo) : 9999;
+    const snB = b.seatNo != null ? Number(b.seatNo) : 9999;
+    return snA - snB;
+  });
+  const rows = [['座號','姓名','積分'], ...sorted.map(([,s]) => [s.seatNo||'','s.name',s.score])];
+  // 修正姓名欄位
+  const fixed = [['座號','姓名','積分'], ...sorted.map(([,s]) => [s.seatNo||'', s.name, s.score])];
+  const csv = '\uFEFF' + fixed.map(r => r.join(',')).join('\n');
+  const a   = document.createElement('a');
+  a.href    = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'}));
+  a.download= `班級積分_${new Date().toLocaleDateString('zh-TW').replace(/\//g,'-')}.csv`;
+  a.click();
+  showToast('✅ 已匯出 CSV 檔案！');
+}
+window.exportCSV = exportCSV;
+
+function teacherLogout() {
+  isTeacher = false;
+  document.getElementById('teacher-bar').style.display = 'none';
+  document.getElementById('btn-login').style.display   = 'inline-block';
+  document.getElementById('btn-logout').style.display  = 'none';
+  renderBoard();
+  renderShop();
+}
+window.teacherLogin  = teacherLogin;
+window.teacherLogout = teacherLogout;
+
+// ═══════════════════════════════════════
+//  Toast 通知
+// ═══════════════════════════════════════
+function showToast(msg, type = 'ok') {
+  const t = document.getElementById('toast');
+  t.textContent  = msg;
+  t.className    = `toast show ${type}`;
+  setTimeout(() => t.className = 'toast', 2500);
+}
+
+// ═══════════════════════════════════════
+//  搜尋 & 排序
+// ═══════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('search-input').addEventListener('input', renderBoard);
+  // 開啟管理 Modal 時即時渲染現有獎品清單
+  document.getElementById('manage-modal').addEventListener('click', e => {
+    if (e.target.id === 'manage-modal') document.getElementById('manage-modal').classList.remove('show');
+  });
+  initDB();
+});
+
+// 在 rewards 更新後也更新管理清單
+const origRenderShop = renderShop;
+window.renderShopAndManage = function() {
+  renderShop();
+  const ml = document.getElementById('manage-list');
+  if (!ml) return;
+  ml.innerHTML = rewards.length ? rewards.map(r =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:0.5px solid #f1f5f9">
+      <span style="font-size:20px">${r.emoji}</span>
+      <span style="flex:1;font-size:14px;color:#1e293b">${r.name}</span>
+      <span style="font-size:13px;color:#6366f1;font-weight:bold">${r.cost}分</span>
+      <span style="font-size:12px;color:#94a3b8">${r.stock<0?'無限':r.stock+'個'}</span>
+      <button onclick="deleteReward('${r.id}')" style="background:#fee2e2;border:none;border-radius:6px;color:#991b1b;padding:3px 8px;font-size:12px;cursor:pointer">刪除</button>
+    </div>`
+  ).join('') : '<div style="color:#94a3b8;font-size:13px">尚無獎品</div>';
+};
+</script>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;background:#f0f4ff;min-height:100vh;color:#1e293b}
+
+header{background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;box-shadow:0 2px 12px rgba(99,102,241,.3)}
+.header-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:1px}
+.header-sub{font-size:13px;color:#c4b5fd;margin-top:2px}
+.header-btns{display:flex;gap:8px;align-items:center}
+.hbtn{padding:7px 16px;border-radius:20px;border:none;font-size:14px;font-weight:bold;cursor:pointer;transition:transform .1s,opacity .2s}
+.hbtn:hover{transform:scale(1.05)}
+.hbtn-login{background:#fff;color:#6366f1}
+.hbtn-logout{background:rgba(255,255,255,.2);color:#fff;display:none}
+.hbtn-outline{background:transparent;border:2px solid rgba(255,255,255,.5);color:#fff}
+
+.stats-row{display:flex;gap:12px;padding:16px 20px;background:#fff;border-bottom:1px solid #e2e8f0;flex-wrap:wrap}
+.stat-chip{background:#f1f5f9;border-radius:10px;padding:8px 16px;font-size:13px;color:#64748b;font-weight:bold}
+.stat-chip span{font-size:18px;color:#6366f1;margin-left:4px}
+
+.teacher-bar{display:none;background:#fef3c7;border-bottom:2px solid #fbbf24;padding:10px 20px;gap:10px;align-items:center;flex-wrap:wrap}
+.teacher-bar h3{font-size:14px;color:#92400e;font-weight:bold;margin-right:4px}
+.tb-input{padding:7px 12px;border:1.5px solid #fbbf24;border-radius:8px;font-size:14px;background:#fff;width:130px}
+.tb-btn{padding:7px 14px;border-radius:8px;border:none;font-size:13px;font-weight:bold;cursor:pointer;transition:transform .1s}
+.tb-btn:hover{transform:scale(1.04)}
+.tb-btn-add{background:#6366f1;color:#fff}
+.tb-btn-batch{background:#8b5cf6;color:#fff}
+
+.search-bar{padding:12px 20px;background:#fff;border-bottom:1px solid #e2e8f0}
+.search-bar input{width:100%;max-width:380px;padding:9px 14px;border:1.5px solid #c7d2fe;border-radius:20px;font-size:15px;outline:none;transition:border .2s}
+.search-bar input:focus{border-color:#6366f1}
+
+#board{padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+
+.student-card{background:#fff;border-radius:16px;padding:16px 14px;display:flex;flex-direction:column;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,.07);animation:cardIn .3s ease both;transition:transform .2s,box-shadow .2s;position:relative}
+.student-card:hover{transform:translateY(-3px);box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.top-card{border:2px solid #c4b5fd;background:linear-gradient(135deg,#faf5ff,#ede9fe)}
+@keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+.seat-no{font-size:11px;font-weight:bold;color:#94a3b8;background:#f1f5f9;border-radius:20px;padding:2px 8px;align-self:flex-start}
+.rank{font-size:20px;font-weight:900;text-align:center}
+.name{font-size:17px;font-weight:bold;color:#1e293b;text-align:center;word-break:break-all}
+.score-wrap{display:flex;align-items:baseline;gap:4px;margin-top:2px}
+.score{font-size:36px;font-weight:900;color:#6366f1;line-height:1}
+.score-label{font-size:14px;color:#94a3b8;font-weight:bold}
+.stars{font-size:14px;letter-spacing:1px;min-height:18px}
+@keyframes scoreBounce{0%{transform:scale(1)}30%{transform:scale(1.5)}60%{transform:scale(0.9)}100%{transform:scale(1)}}
+.score-bounce{animation:scoreBounce .5s ease}
+
+.teacher-actions{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;justify-content:center}
+.btn-plus,.btn-minus,.btn-edit{padding:5px 10px;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;transition:transform .1s}
+.btn-plus:hover,.btn-minus:hover,.btn-edit:hover{transform:scale(1.1)}
+.btn-plus{background:#d1fae5;color:#065f46}
+.big-add{background:#6ee7b7;color:#064e3b}
+.btn-minus{background:#fee2e2;color:#991b1b}
+.btn-edit{background:#e0e7ff;color:#3730a3}
+
+/* Modal */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:center;justify-content:center;padding:16px}
+.overlay.show{display:flex}
+.modal{background:#fff;border-radius:20px;padding:24px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.2);display:flex;flex-direction:column;gap:14px}
+.modal h2{font-size:18px;font-weight:900;color:#1e293b}
+.modal label{font-size:13px;color:#64748b;font-weight:bold;display:block;margin-bottom:4px}
+.modal input,.modal textarea,.modal select{width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px;font-family:inherit;transition:border .2s}
+.modal input:focus,.modal textarea:focus{border-color:#6366f1;outline:none}
+.modal textarea{min-height:80px;resize:vertical}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end}
+.mbtn{padding:9px 20px;border-radius:10px;border:none;font-size:14px;font-weight:bold;cursor:pointer;transition:transform .1s}
+.mbtn:hover{transform:scale(1.04)}
+.mbtn-ok{background:#6366f1;color:#fff}
+.mbtn-cancel{background:#f1f5f9;color:#64748b}
+
+.reason-chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:5px 12px;border-radius:20px;border:1.5px solid #c7d2fe;background:#f5f3ff;color:#4338ca;font-size:13px;cursor:pointer;transition:background .15s}
+.chip:hover,.chip.active{background:#6366f1;color:#fff;border-color:#6366f1}
+
+.reward-card{background:#fff;border-radius:16px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,.07);text-align:center;border:0.5px solid #e2e8f0;transition:transform .2s}
+.reward-card:hover{transform:translateY(-2px)}
+.reward-emoji{font-size:36px}
+.reward-name{font-size:14px;font-weight:bold;color:#1e293b}
+.reward-cost{font-size:13px;color:#6366f1;font-weight:bold}
+.reward-stock{font-size:12px;color:#94a3b8}
+.reward-sold{font-size:12px;color:#dc2626;font-weight:bold;background:#fee2e2;border-radius:6px;padding:2px 8px}
+.toast{position:fixed;bottom:24px;right:24px;background:#1e293b;color:#fff;padding:10px 20px;border-radius:12px;font-size:14px;font-weight:bold;opacity:0;transform:translateY(16px);transition:opacity .3s,transform .3s;pointer-events:none;z-index:999}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.error{background:#dc2626}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="header-title">🏆 班級榮譽積分看板</div>
+    <div class="header-sub" id="firebase-status">連線中…</div>
+  </div>
+  <div class="header-btns">
+    <button class="hbtn hbtn-login"  id="btn-login"  onclick="teacherLogin()">🔑 老師登入</button>
+    <button class="hbtn hbtn-logout" id="btn-logout" onclick="teacherLogout()">登出</button>
+  </div>
+</header>
+
+<div class="stats-row">
+  <div class="stat-chip">學生人數<span id="total-count">0</span></div>
+  <div class="stat-chip">目前第一名<span id="top-name">—</span></div>
+  <button id="btn-sort-toggle" class="hbtn" style="background:#6366f1;color:#fff;border-radius:20px;padding:6px 16px;font-size:13px;border:none;cursor:pointer;" onclick="sortByRank=!sortByRank;renderBoard()">🏆 切換名次排列</button>
+</div>
+
+<!-- 老師工具列 -->
+<div class="teacher-bar" id="teacher-bar">
+  <h3>🛠️ 老師工具：</h3>
+  <input class="tb-input" id="new-seat" type="number" placeholder="座號" style="width:70px" onkeydown="if(event.key==='Enter')addStudent()">
+  <input class="tb-input" id="new-name" placeholder="學生姓名" onkeydown="if(event.key==='Enter')addStudent()">
+  <button class="tb-btn tb-btn-add" onclick="addStudent()">新增學生</button>
+  <button class="tb-btn tb-btn-batch" onclick="document.getElementById('batch-modal').classList.add('show')">批次匯入</button>
+  <button class="tb-btn" style="background:#dc2626;" onclick="deleteAllStudents()">🗑️ 刪除全部學生</button>
+  <button class="tb-btn" style="background:#b45309;" onclick="resetAllScores()">🔄 全班積分歸零</button>
+  <button class="tb-btn" style="background:#0f766e;" onclick="exportCSV()">📥 匯出 CSV</button>
+  <button class="tb-btn" style="background:#6366f1;" onclick="openHistory()">📋 加分歷程</button>
+</div>
+
+<!-- 搜尋 -->
+<div class="search-bar">
+  <input id="search-input" placeholder="🔍  搜尋學生姓名…">
+</div>
+
+<!-- 看板 -->
+<div id="board"></div>
+
+<!-- 詳細編輯 Modal -->
+<div class="overlay" id="edit-modal">
+  <div class="modal">
+    <h2>✏️ 編輯學生</h2>
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:end">
+      <div>
+        <label>座號</label>
+        <input id="edit-seat" type="number" min="1" placeholder="座號">
+      </div>
+      <div>
+        <label>姓名</label>
+        <input id="edit-name" type="text">
+      </div>
+    </div>
+    <div>
+      <label>目前分數</label>
+      <input id="edit-score" type="number" min="0">
+    </div>
+    <div>
+      <label>加減分（可留空）</label>
+      <input id="edit-delta" type="number" placeholder="例如 +3 或 -2">
+    </div>
+    <div>
+      <label>加分原因</label>
+      <div class="reason-chips" id="reason-chips">
+        <span class="chip" onclick="pickReason(this,'舉手發言')">舉手發言</span>
+        <span class="chip" onclick="pickReason(this,'繳交作業')">繳交作業</span>
+        <span class="chip" onclick="pickReason(this,'幫助同學')">幫助同學</span>
+        <span class="chip" onclick="pickReason(this,'表現優秀')">表現優秀</span>
+        <span class="chip" onclick="pickReason(this,'回答問題')">回答問題</span>
+      </div>
+      <input id="edit-reason" type="text" placeholder="或自由輸入原因…" style="margin-top:8px">
+    </div>
+    <div class="modal-btns" style="justify-content:space-between">
+      <button class="mbtn" style="background:#fee2e2;color:#991b1b;"
+        onclick="deleteStudent(editingId)">🗑️ 刪除學生</button>
+      <div style="display:flex;gap:8px">
+        <button class="mbtn mbtn-cancel" onclick="closeEdit()">取消</button>
+        <button class="mbtn mbtn-ok"     onclick="saveEdit()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 批次匯入 Modal -->
+<div class="overlay" id="batch-modal">
+  <div class="modal">
+    <h2>📋 批次匯入學生</h2>
+    <div>
+      <label>每行一個學生，格式：「座號 姓名」或純姓名（初始分數皆為 0）</label>
+      <textarea id="batch-names" placeholder="1 小明&#10;2 小華&#10;3 小美&#10;或直接輸入姓名"></textarea>
+    </div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" onclick="document.getElementById('batch-modal').classList.remove('show')">取消</button>
+      <button class="mbtn mbtn-ok" onclick="batchAdd()">匯入</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ★ 獎勵商店區塊 -->
+<div style="padding:16px 20px 4px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+  <div style="font-size:18px;font-weight:900;color:#1e293b">🛒 獎勵兌換商店</div>
+  <button id="btn-manage-rewards" class="tb-btn tb-btn-batch" style="display:none"
+    onclick="document.getElementById('manage-modal').classList.add('show')">⚙️ 管理獎品</button>
+</div>
+<div id="shop-grid" style="padding:8px 20px 24px;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px"></div>
+
+<!-- 兌換 Modal -->
+<div class="overlay" id="redeem-modal">
+  <div class="modal">
+    <h2>🎁 為學生兌換獎勵</h2>
+    <div style="background:#f1f5f9;border-radius:10px;padding:12px;font-size:15px;font-weight:bold;color:#4338ca;text-align:center" id="redeem-reward-name"></div>
+    <input type="hidden" id="redeem-reward-id">
+    <div>
+      <label>選擇學生</label>
+      <select id="redeem-student-select" style="width:100%;padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px"></select>
+    </div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" onclick="document.getElementById('redeem-modal').classList.remove('show')">取消</button>
+      <button class="mbtn mbtn-ok" onclick="confirmRedeem()">確認兌換 ✅</button>
+    </div>
+  </div>
+</div>
+
+<!-- 管理獎品 Modal -->
+<div class="overlay" id="manage-modal">
+  <div class="modal" style="max-width:520px">
+    <h2>⚙️ 管理獎品清單</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div><label>獎品名稱</label><input id="new-reward-name" placeholder="例如：貼紙一張"></div>
+      <div><label>Emoji 圖示</label><input id="new-reward-emoji" placeholder="例如 🎁" style="font-size:20px"></div>
+      <div><label>所需積分</label><input id="new-reward-cost" type="number" min="1" placeholder="例如 20"></div>
+      <div><label>庫存數量（-1 = 無限）</label><input id="new-reward-stock" type="number" placeholder="-1"></div>
+    </div>
+    <button class="mbtn mbtn-ok" onclick="addReward()" style="width:100%">➕ 新增獎品</button>
+    <div style="border-top:1px solid #e2e8f0;padding-top:12px">
+      <div style="font-size:13px;color:#64748b;font-weight:bold;margin-bottom:8px">現有獎品</div>
+      <div id="manage-list"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" onclick="document.getElementById('manage-modal').classList.remove('show')">關閉</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- 加分歷程 Modal -->
+<div class="overlay" id="history-modal">
+  <div class="modal" style="max-width:540px">
+    <h2>📋 加分歷程（最近 50 筆）</h2>
+    <div id="history-list" style="max-height:60vh;overflow-y:auto;"></div>
+    <div class="modal-btns">
+      <button class="mbtn mbtn-cancel" onclick="document.getElementById('history-modal').classList.remove('show')">關閉</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function pickReason(el, text) {
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('edit-reason').value = text;
+}
+</script>
+
+</body>
+</html>
