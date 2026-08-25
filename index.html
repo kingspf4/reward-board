@@ -174,15 +174,7 @@ async function quickAdd(id, delta) {
   await saveStudent(id, { ...s, score: newSc });
   await logHistory({ studentId: id, name: s.name, delta, reason: delta > 0 ? '快速加分' : '快速扣分' });
   showToast(`${s.name} ${delta > 0 ? '＋' : ''}${delta} 分 → ${newSc} 分`);
-  // 數字跳動動畫
-  const scoreEl = document.querySelector(`#cc-${id} .score`);
-  if (scoreEl) {
-    scoreEl.classList.remove('score-bounce');
-    void scoreEl.offsetWidth;
-    scoreEl.classList.add('score-bounce');
-    scoreEl.style.color = delta > 0 ? '#059669' : '#dc2626';
-    setTimeout(() => scoreEl.style.color = '#6366f1', 800);
-  }
+
 }
 window.quickAdd = quickAdd;
 
@@ -558,8 +550,6 @@ header{background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:16px 24px;disp
 .score{font-size:36px;font-weight:900;color:#6366f1;line-height:1}
 .score-label{font-size:14px;color:#94a3b8;font-weight:bold}
 .stars{font-size:14px;letter-spacing:1px;min-height:18px}
-@keyframes scoreBounce{0%{transform:scale(1)}30%{transform:scale(1.5)}60%{transform:scale(0.9)}100%{transform:scale(1)}}
-.score-bounce{animation:scoreBounce .5s ease}
 
 .teacher-actions{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;justify-content:center}
 .btn-plus,.btn-minus,.btn-edit{padding:5px 10px;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;transition:transform .1s}
