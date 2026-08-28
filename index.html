@@ -38,15 +38,21 @@ let rewards     = [];   // [{ id, name, cost, emoji, stock }]
 let isTeacher   = false;
 let editingId   = null;
 let dbReady     = false;
-let sortByRank  = false;  // false = 座號排序，true = 名次排序
 let maxScore    = 0;       // 0 = 不限制
 
 const DEFAULT_REWARDS = [
-  { id:'r1', name:'不寫一題作業', cost:20, emoji:'📝', stock:-1 },
-  { id:'r2', name:'貼紙一張',      cost:10, emoji:'⭐', stock:-1 },
-  { id:'r3', name:'糖果一顆',      cost:15, emoji:'🍬', stock:-1 },
-  { id:'r4', name:'自由座位一節', cost:30, emoji:'🪑', stock:-1 },
-  { id:'r5', name:'老師小禮物',   cost:50, emoji:'🎁', stock:5  },
+  { id:'r1',  name:'自選座位搭檔',    cost:20, emoji:'✏️',  stock:-1 },
+  { id:'r2',  name:'全班玩遊戲一次',  cost:60, emoji:'🕹️', stock:-1 },
+  { id:'r3',  name:'老師請賞小點心',  cost:30, emoji:'🍕',  stock:-1 },
+  { id:'r4',  name:'免當值日生一次',  cost:25, emoji:'⏰',  stock:-1 },
+  { id:'r5',  name:'貼紙一張',        cost:10, emoji:'⭐',  stock:-1 },
+  { id:'r6',  name:'糖果一顆',        cost:15, emoji:'🍬',  stock:-1 },
+  { id:'r7',  name:'老師神秘小禮物',  cost:60, emoji:'🎁',  stock:5  },
+  { id:'r8',  name:'文具一份',        cost:40, emoji:'🎀',  stock:-1 },
+  { id:'r9',  name:'免寫一題作業',    cost:20, emoji:'📝',  stock:-1 },
+  { id:'r10', name:'免寫一頁作業',    cost:30, emoji:'📖',  stock:-1 },
+  { id:'r11', name:'下課不用打掃',    cost:20, emoji:'🔕',  stock:-1 },
+  { id:'r12', name:'課堂播音樂一首',  cost:15, emoji:'🎵',  stock:-1 },
 ];
 
 // ═══════════════════════════════════════
@@ -103,16 +109,13 @@ async function logHistory(record) {
 function renderBoard() {
   // 排序：名次模式（高分在前）或座號模式
   const sorted = Object.entries(students).sort(([idA, a], [idB, b]) => {
-    if (sortByRank) return b.score - a.score;
     const snA = a.seatNo != null ? Number(a.seatNo) : 9999;
     const snB = b.seatNo != null ? Number(b.seatNo) : 9999;
     if (snA !== snB) return snA - snB;
     return idA.localeCompare(idB);
   });
 
-  // 切換按鈕文字
-  const sortBtn = document.getElementById('btn-sort-toggle');
-  if (sortBtn) sortBtn.textContent = sortByRank ? '📋 切換座號順序' : '🏆 切換名次排列';
+
 
   const container = document.getElementById('board');
   const search    = document.getElementById('search-input').value.toLowerCase();
@@ -128,16 +131,11 @@ function renderBoard() {
     return;
   }
 
-  // 計算名次（用分數決定，只用於顯示）
-  const byScore = [...sorted].sort(([,a],[,b]) => b.score - a.score);
-  const rankMap = {};
-  byScore.forEach(([id], idx) => rankMap[id] = idx + 1);
 
   sorted.forEach(([id, s], idx) => {
     if (search && !s.name.toLowerCase().includes(search)) return;
     const seatNo = s.seatNo != null ? s.seatNo : idx + 1;
-    const rank   = rankMap[id];
-    const medal  = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
+
     const card   = document.createElement('div');
     card.className = 'student-card';
     card.id = `cc-${id}`;
@@ -147,7 +145,6 @@ function renderBoard() {
 
     card.innerHTML = `
       <div class="seat-no">No.${seatNo}</div>
-      ${medal ? `<div class="rank">${medal}</div>` : ''}
       <div class="name">${s.name}</div>
       <div class="score-wrap">
         <div class="score">${s.score}</div>
@@ -155,17 +152,15 @@ function renderBoard() {
       </div>
       ${stars ? `<div class="stars">${stars}</div>` : ''}
       <div class="teacher-actions">
-          <button class="btn-plus"  onclick="quickAdd('${id}', 1)"  title="加 1 分">＋1</button>
-          <button class="btn-plus big-add" onclick="quickAdd('${id}', 5)" title="加 5 分">＋5</button>
-          <button class="btn-minus" onclick="quickAdd('${id}', -1)" title="扣 1 分">－1</button>
+          <button class="btn-plus"  onclick="quickAdd('${id}', 1)">＋1</button>
+          <button class="btn-plus big-add" onclick="quickAdd('${id}', 5)">＋5</button>
+          <button class="btn-minus" onclick="quickAdd('${id}', -1)">－1</button>
           ${isTeacher ? `<button class="btn-edit" onclick="openEdit('${id}')" title="詳細設定">✏️</button>` : ''}
         </div>`;
     container.appendChild(card);
   });
 
-  const topByScore = sorted.sort(([,a],[,b]) => b.score - a.score)[0];
   document.getElementById('total-count').textContent = Object.keys(students).length;
-  document.getElementById('top-name').textContent    = topByScore?.[1]?.name || '—';
 }
 
 // ═══════════════════════════════════════
@@ -187,10 +182,6 @@ async function quickAdd(id, delta) {
 }
 window.quickAdd = quickAdd;
 
-window.toggleSortMode = function() {
-  sortByRank = !sortByRank;
-  renderBoard();
-};
 
 // ═══════════════════════════════════════
 //  詳細編輯 Modal
@@ -558,20 +549,20 @@ header{background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:16px 24px;disp
 @keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 
 .seat-no{font-size:11px;font-weight:bold;color:#94a3b8;background:#f1f5f9;border-radius:20px;padding:2px 8px;align-self:flex-start}
-.rank{font-size:20px;font-weight:900;text-align:center}
-.name{font-size:17px;font-weight:bold;color:#1e293b;text-align:center;word-break:break-all}
+.name{font-size:24px;font-weight:bold;color:#1e293b;text-align:center;word-break:break-all}
 .score-wrap{display:flex;align-items:baseline;gap:4px;margin-top:2px}
 .score{font-size:36px;font-weight:900;color:#6366f1;line-height:1}
 .score-label{font-size:14px;color:#94a3b8;font-weight:bold}
 .stars{font-size:14px;letter-spacing:1px;min-height:18px}
 
-.teacher-actions{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;justify-content:center}
-.btn-plus,.btn-minus,.btn-edit{padding:5px 10px;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;transition:transform .1s}
-.btn-plus:hover,.btn-minus:hover,.btn-edit:hover{transform:scale(1.1)}
-.btn-plus{background:#d1fae5;color:#065f46}
-.big-add{background:#6ee7b7;color:#064e3b}
-.btn-minus{background:#fee2e2;color:#991b1b}
-.btn-edit{background:#e0e7ff;color:#3730a3}
+.teacher-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;width:100%}
+.btn-plus,.btn-minus,.btn-edit{padding:12px 4px;border:none;border-radius:12px;font-size:18px;font-weight:900;cursor:pointer;transition:transform .1s,box-shadow .1s;width:100%;line-height:1}
+.btn-plus:active,.btn-minus:active,.btn-edit:active{transform:scale(.93)}
+.btn-plus:hover,.btn-minus:hover,.btn-edit:hover{box-shadow:0 4px 10px rgba(0,0,0,.15)}
+.btn-plus{background:#059669;color:#fff}
+.big-add{background:#10b981;color:#fff;font-size:16px}
+.btn-minus{background:#dc2626;color:#fff}
+.btn-edit{background:#6366f1;color:#fff;grid-column:span 3;padding:9px 4px;font-size:15px}
 
 /* Modal */
 .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:center;justify-content:center;padding:16px}
@@ -619,8 +610,7 @@ header{background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:16px 24px;disp
 
 <div class="stats-row">
   <div class="stat-chip">學生人數<span id="total-count">0</span></div>
-  <div class="stat-chip">目前第一名<span id="top-name">—</span></div>
-  <button id="btn-sort-toggle" class="hbtn" style="background:#6366f1;color:#fff;border-radius:20px;padding:6px 16px;font-size:13px;border:none;cursor:pointer;" onclick="toggleSortMode()">🏆 切換名次排列</button>
+
 </div>
 
 <!-- 老師工具列 -->
