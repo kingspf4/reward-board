@@ -402,71 +402,35 @@ window.deleteReward = deleteReward;
 // ═══════════════════════════════════════
 //  加分歷程
 // ═══════════════════════════════════════
-let _historyRecords = [];
-
 async function openHistory() {
-  document.getElementById('history-list').innerHTML =
-    '<div style="color:#94a3b8;text-align:center;padding:2rem">載入中…</div>';
-  document.getElementById('history-modal').classList.add('show');
-
   const histSnap = await get(ref(db, 'history'));
   const histData = histSnap.val() || {};
-  _historyRecords = Object.values(histData).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const records  = Object.values(histData)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 50);
 
-  renderHistoryList(_historyRecords);
-}
-
-function renderHistoryList(records) {
   const list = document.getElementById('history-list');
   if (!list) return;
   list.innerHTML = records.length ? records.map(r => {
-    const d    = r.ts ? new Date(r.ts) : null;
-    const time = d ? `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '—';
+    const d     = r.ts ? new Date(r.ts) : null;
+    const time  = d ? `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '—';
     const color = r.delta > 0 ? '#065f46' : '#991b1b';
     const bg    = r.delta > 0 ? '#d1fae5' : '#fee2e2';
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid #f1f5f9;font-size:14px">
-      <span style="color:#94a3b8;min-width:110px;font-size:12px">${time}</span>
+      <span style="color:#94a3b8;min-width:72px;font-size:12px">${time}</span>
       <span style="flex:1;font-weight:bold;color:#1e293b">${r.name}</span>
-      <span style="background:${bg};color:${color};font-weight:900;border-radius:6px;padding:2px 8px;min-width:36px;text-align:center">${r.delta > 0 ? '+' : ''}${r.delta}</span>
-      <span style="color:#64748b;font-size:12px;max-width:120px;text-align:right">${r.reason || ''}</span>
+      <span style="background:${bg};color:${color};font-weight:900;border-radius:6px;padding:2px 8px">${r.delta > 0 ? '+' : ''}${r.delta}</span>
+      <span style="color:#64748b;font-size:12px;max-width:100px;text-align:right">${r.reason || ''}</span>
     </div>`;
   }).join('') : '<div style="color:#94a3b8;text-align:center;padding:2rem">尚無記錄</div>';
 
-  document.getElementById('history-count').textContent = `共 ${records.length} 筆`;
+  document.getElementById('history-modal').classList.add('show');
 }
-
-function exportHistoryExcel() {
-  if (!_historyRecords.length) { showToast('尚無歷程資料', 'error'); return; }
-  const rows = ['﻿時間,姓名,加減分,原因'];
-  _historyRecords.forEach(r => {
-    const d    = r.ts ? new Date(r.ts) : null;
-    const time = d ? `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '—';
-    const delta = r.delta > 0 ? '+' + r.delta : String(r.delta);
-    const reason = (r.reason || '').replace(/,/g, '、');
-    rows.push(`${time},${r.name},${delta},${reason}`);
-  });
-  const csv = rows.join('
-');
-  const a   = document.createElement('a');
-  a.href    = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  a.download = `加分歷程_${new Date().toLocaleDateString('zh-TW').replace(/\//g,'-')}.csv`;
-  a.click();
-  showToast('✅ 已下載歷程 CSV（可用 Excel 開啟）');
-}
-window.exportHistoryExcel = exportHistoryExcel;
 window.openHistory = openHistory;
 
 function teacherLogin() {
-  document.getElementById('pw-input').value = '';
-  document.getElementById('pw-error').style.display = 'none';
-  document.getElementById('pw-modal').classList.add('show');
-  setTimeout(() => document.getElementById('pw-input').focus(), 100);
-}
-
-function confirmPassword() {
-  const pw = document.getElementById('pw-input').value;
+  const pw = prompt('請輸入老師密碼：');
   if (pw === TEACHER_PASSWORD) {
-    document.getElementById('pw-modal').classList.remove('show');
     isTeacher = true;
     document.getElementById('teacher-bar').style.display = 'flex';
     document.getElementById('btn-login').style.display   = 'none';
@@ -474,13 +438,10 @@ function confirmPassword() {
     showToast('老師模式已開啟 ✅');
     renderBoard();
     renderShop();
-  } else {
-    document.getElementById('pw-error').style.display = 'block';
-    document.getElementById('pw-input').value = '';
-    document.getElementById('pw-input').focus();
+  } else if (pw !== null) {
+    showToast('密碼錯誤！', 'error');
   }
 }
-window.confirmPassword = confirmPassword;
 function exportCSV() {
   const sorted = Object.entries(students).sort(([,a],[,b]) => {
     const snA = a.seatNo != null ? Number(a.seatNo) : 9999;
@@ -783,33 +744,10 @@ header{background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:16px 24px;disp
 <!-- 加分歷程 Modal -->
 <div class="overlay" id="history-modal">
   <div class="modal" style="max-width:540px">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <h2>📋 加分歷程</h2>
-      <span id="history-count" style="font-size:13px;color:#94a3b8;"></span>
-    </div>
-    <div id="history-list" style="max-height:55vh;overflow-y:auto;"></div>
+    <h2>📋 加分歷程（最近 50 筆）</h2>
+    <div id="history-list" style="max-height:60vh;overflow-y:auto;"></div>
     <div class="modal-btns">
-      <button class="mbtn" style="background:#059669;color:#fff;" onclick="exportHistoryExcel()">📥 下載 Excel</button>
       <button class="mbtn mbtn-cancel" onclick="document.getElementById('history-modal').classList.remove('show')">關閉</button>
-    </div>
-  </div>
-</div>
-
-
-<!-- 密碼輸入 Modal -->
-<div class="overlay" id="pw-modal">
-  <div class="modal" style="max-width:340px;border-color:#6366f1;">
-    <h2 style="text-align:center;">🔑 老師登入</h2>
-    <div>
-      <label style="font-size:13px;color:#64748b;font-weight:bold;display:block;margin-bottom:6px;">請輸入密碼</label>
-      <input id="pw-input" type="password" placeholder="••••••"
-        style="width:100%;padding:12px;border:1.5px solid #c7d2fe;border-radius:10px;font-size:20px;text-align:center;letter-spacing:4px;outline:none;"
-        onkeydown="if(event.key==='Enter')confirmPassword()">
-      <div id="pw-error" style="display:none;color:#dc2626;font-size:13px;margin-top:6px;text-align:center;font-weight:bold;">❌ 密碼錯誤，請再試一次</div>
-    </div>
-    <div class="modal-btns">
-      <button class="mbtn mbtn-cancel" onclick="document.getElementById('pw-modal').classList.remove('show')">取消</button>
-      <button class="mbtn mbtn-ok" onclick="confirmPassword()">確認登入</button>
     </div>
   </div>
 </div>
